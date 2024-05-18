@@ -11,15 +11,16 @@ use core::ops::Deref;
 use core::mem::ManuallyDrop;
 use core::{alloc::Layout, cell::UnsafeCell, ptr::NonNull};
 use core::sync::atomic::{AtomicUsize, AtomicU8, AtomicBool, Ordering};
-use hal_base::arch::TaskContext as ThreadStruct;
-use hal_base::arch::TrapFrame;
-use hal_base::trap::{TRAPFRAME_SIZE, STACK_ALIGN};
-use axtype::{align_up_4k, align_down, PAGE_SIZE};
-use spinirq::SpinNoIrq;
-//use hal_base::arch::write_page_table_root0;
-//use hal_base::paging::PageTable;
+use axhal::arch::TaskContext as ThreadStruct;
+use axhal::arch::TrapFrame;
+use axhal::mem::VirtAddr;
+use axhal::trap::{TRAPFRAME_SIZE, STACK_ALIGN};
+use memory_addr::{align_up_4k, align_down, PAGE_SIZE_4K};
+use spinbase::SpinNoIrq;
+use axhal::arch::write_page_table_root0;
+use axhal::paging::PageTable;
 
-pub const THREAD_SIZE: usize = 32 * PAGE_SIZE;
+pub const THREAD_SIZE: usize = 32 * PAGE_SIZE_4K;
 
 pub type Tid = usize;
 
@@ -84,7 +85,7 @@ pub struct SchedInfo {
     pub set_child_tid: usize,
     pub clear_child_tid: usize,
 
-    //pub pgd: Option<Arc<SpinNoIrq<PageTable>>>,
+    pub pgd: Option<Arc<SpinNoIrq<PageTable>>>,
     pub mm_id: AtomicUsize,
     pub active_mm_id: AtomicUsize,
 
@@ -118,7 +119,7 @@ impl SchedInfo {
             set_child_tid: 0,
             clear_child_tid: 0,
 
-            //pgd: None,
+            pgd: None,
             mm_id: AtomicUsize::new(0),
             active_mm_id: AtomicUsize::new(0),
 
@@ -179,11 +180,9 @@ impl SchedInfo {
         self.in_wait_queue.store(in_wait_queue, Ordering::Release);
     }
 
-    /*
     pub fn try_pgd(&self) -> Option<Arc<SpinNoIrq<PageTable>>> {
         self.pgd.as_ref().and_then(|pgd| Some(pgd.clone()))
     }
-    */
 
     /*
     pub fn dup_sched_info(
@@ -205,14 +204,12 @@ impl SchedInfo {
     }
     */
 
-    /*
     pub fn set_mm(&mut self, mm_id: usize, pgd: Arc<SpinNoIrq<PageTable>>) {
         assert!(mm_id != 0);
         self.mm_id = AtomicUsize::new(mm_id);
         self.active_mm_id = AtomicUsize::new(mm_id);
         self.pgd = Some(pgd.clone());
     }
-    */
 
     pub fn pt_regs_addr(&self) -> usize {
         self.kstack.as_ref().unwrap().top() - align_down(TRAPFRAME_SIZE, STACK_ALIGN)
@@ -227,7 +224,7 @@ impl SchedInfo {
         self.thread.get()
     }
 
-    pub fn init(&mut self, entry: Option<*mut dyn FnOnce()>, entry_func: usize, tls: usize) {
+    pub fn init(&mut self, entry: Option<*mut dyn FnOnce()>, entry_func: usize, tls: VirtAddr) {
         self.entry = entry;
         self.kstack = Some(TaskStack::alloc(align_up_4k(THREAD_SIZE)));
         let sp = self.pt_regs_addr();
@@ -268,7 +265,7 @@ pub struct CurrentCtx(ManuallyDrop<CtxRef>);
 
 impl CurrentCtx {
     pub fn try_get() -> Option<Self> {
-        let ptr: *const SchedInfo = hal_base::cpu::current_task_ptr();
+        let ptr: *const SchedInfo = axhal::cpu::current_task_ptr();
         if !ptr.is_null() {
             Some(Self(unsafe { ManuallyDrop::new(CtxRef::from_raw(ptr)) }))
         } else {
@@ -300,7 +297,7 @@ impl CurrentCtx {
         let Self(arc) = prev;
         ManuallyDrop::into_inner(arc); // `call Arc::drop()` to decrease prev task reference count.
         let ptr = Arc::into_raw(next.clone());
-        hal_base::cpu::set_current_task_ptr(ptr);
+        axhal::cpu::set_current_task_ptr(ptr);
     }
 }
 
@@ -319,7 +316,6 @@ pub fn try_current_ctx() -> Option<CurrentCtx> {
     CurrentCtx::try_get()
 }
 
-/*
 pub fn switch_mm(prev_mm_id: usize, next_mm_id: usize, next_pgd: Arc<SpinNoIrq<PageTable>>) {
     if prev_mm_id == next_mm_id {
         return;
@@ -330,7 +326,6 @@ pub fn switch_mm(prev_mm_id: usize, next_mm_id: usize, next_pgd: Arc<SpinNoIrq<P
         write_page_table_root0(next_pgd.lock().root_paddr().into());
     }
 }
-*/
 
 pub fn init_sched_info() -> Arc<SchedInfo> {
     Arc::new(SchedInfo::new())

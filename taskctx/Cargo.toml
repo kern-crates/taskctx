@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 log = "0.4"
-hal_base = { git = "ssh://git@github.com/shilei-massclouds/hal_base.git" }
-spinirq = { git = "ssh://git@github.com/shilei-massclouds/spinirq.git" }
-axtype = { git = "ssh://git@github.com/shilei-massclouds/axtype.git" }
+axhal = { git = "ssh://git@github.com/shilei-massclouds/axhal.git" }
+spinbase = { git = "ssh://git@github.com/shilei-massclouds/spinbase.git" }
+memory_addr = { git = "ssh://git@github.com/shilei-massclouds/memory_addr.git" }
