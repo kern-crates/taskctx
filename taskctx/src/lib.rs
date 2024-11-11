@@ -13,14 +13,20 @@ use core::{alloc::Layout, cell::UnsafeCell, ptr::NonNull};
 use core::sync::atomic::{AtomicUsize, AtomicU8, AtomicBool, Ordering};
 use axhal::arch::TaskContext as ThreadStruct;
 use axhal::arch::TrapFrame;
-use axhal::mem::VirtAddr;
 use axhal::trap::{TRAPFRAME_SIZE, STACK_ALIGN};
 use memory_addr::{align_up_4k, align_down, PAGE_SIZE_4K};
 use spinbase::SpinNoIrq;
 use axhal::arch::write_page_table_root0;
-use axhal::paging::PageTable;
+use page_table::paging::PageTable;
+use lazy_init::LazyInit;
 
 pub const THREAD_SIZE: usize = 32 * PAGE_SIZE_4K;
+
+pub const TIF_SIGPENDING: usize     = 2;    // signal pending
+pub const TIF_NOTIFY_SIGNAL: usize  = 9;    // signal notifications exist
+
+pub const _TIF_SIGPENDING: usize = 1 << TIF_SIGPENDING;
+pub const _TIF_NOTIFY_SIGNAL: usize = 1 << TIF_NOTIFY_SIGNAL;
 
 pub type Tid = usize;
 
@@ -76,6 +82,8 @@ pub struct SchedInfo {
     tid:    Tid,
     tgid:   Tid,
 
+    pub flags: AtomicUsize,
+
     pub real_parent:   Option<Arc<SchedInfo>>,
     pub group_leader:  Option<Arc<SchedInfo>>,
 
@@ -110,6 +118,7 @@ impl SchedInfo {
             tid: 0,
             tgid: 0,
 
+            flags: AtomicUsize::new(0),
             real_parent: None,
             group_leader: None,
 
@@ -124,7 +133,7 @@ impl SchedInfo {
             active_mm_id: AtomicUsize::new(0),
 
             entry: None,
-            kstack: None,
+            kstack: Some(TaskStack::alloc(align_up_4k(THREAD_SIZE))),
             state: AtomicU8::new(TaskState::Ready as u8),
             in_wait_queue: AtomicBool::new(false),
             need_resched: AtomicBool::new(false),
@@ -148,6 +157,16 @@ impl SchedInfo {
 
     pub fn tgid(&self) -> usize {
         self.tgid
+    }
+
+    #[inline]
+    pub fn set_tsk_thread_flag(&self, flag: usize) {
+        self.flags.fetch_or(1<<flag, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn clear_tsk_thread_flag(&self, flag: usize) {
+        self.flags.fetch_and(!(1<<flag), Ordering::Relaxed);
     }
 
     #[inline]
@@ -222,13 +241,6 @@ impl SchedInfo {
     #[inline]
     pub const unsafe fn ctx_mut_ptr(&self) -> *mut ThreadStruct {
         self.thread.get()
-    }
-
-    pub fn init(&mut self, entry: Option<*mut dyn FnOnce()>, entry_func: usize, tls: VirtAddr) {
-        self.entry = entry;
-        self.kstack = Some(TaskStack::alloc(align_up_4k(THREAD_SIZE)));
-        let sp = self.pt_regs_addr();
-        self.thread.get_mut().init(entry_func, sp.into(), tls);
     }
 
     #[inline]
@@ -327,6 +339,26 @@ pub fn switch_mm(prev_mm_id: usize, next_mm_id: usize, next_pgd: Arc<SpinNoIrq<P
     }
 }
 
+/*
 pub fn init_sched_info() -> Arc<SchedInfo> {
     Arc::new(SchedInfo::new())
+}
+*/
+
+static INIT_THREAD: LazyInit<CtxRef> = LazyInit::new();
+
+pub fn init(_cpu_id: usize, _dtb_pa: usize) {
+    axconfig::init_once!();
+
+    let ctx = Arc::new(SchedInfo::new());
+    INIT_THREAD.init_by(ctx);
+
+    let ptr = Arc::into_raw(INIT_THREAD.clone());
+    unsafe {
+        axhal::cpu::set_current_task_ptr(ptr);
+    }
+}
+
+pub fn init_thread() -> Arc<SchedInfo> {
+    INIT_THREAD.clone()
 }
